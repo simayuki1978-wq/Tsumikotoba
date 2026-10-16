@@ -48,7 +48,44 @@ function getByFilter(filter) {
   return WORD_POOL[filter] || [];
 }
 
-/* ---------------- state ---------------- */
+/* ---------------- profiles (no password — device-local name switcher) ---------------- */
+const PROFILES_KEY = 'tsumikotoba_profiles_v1';
+const PROFILE_EMOJIS = ['🐱', '🐰', '🐻', '🦊', '🐼', '🐯', '🐸', '🐧', '🦄', '🐨'];
+function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+function todayStr(d) { d = d || new Date(); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+function stateKeyFor(id) { return STORAGE_KEY + '_' + id; }
+function loadProfiles() {
+  try {
+    const raw = localStorage.getItem(PROFILES_KEY);
+    if (!raw) return { list: [], activeId: null };
+    const p = JSON.parse(raw);
+    return { list: p.list || [], activeId: p.activeId || null };
+  } catch (e) { return { list: [], activeId: null }; }
+}
+function saveProfiles() {
+  try { localStorage.setItem(PROFILES_KEY, JSON.stringify(PROFILES)); }
+  catch (e) { console.error('save profiles failed', e); }
+}
+let PROFILES = loadProfiles();
+(function migrateLegacyIfNeeded() {
+  // 旧バージョン（プロフィール機能なし）のデータをそのまま引き継ぐための一度きりの移行処理
+  if (PROFILES.list.length > 0) return;
+  try {
+    const legacyRaw = localStorage.getItem(STORAGE_KEY);
+    if (legacyRaw) {
+      const id = 'p_legacy';
+      localStorage.setItem(stateKeyFor(id), legacyRaw);
+      PROFILES.list.push({ id: id, name: 'わたし', emoji: '🍡', createdAt: todayStr() });
+      PROFILES.activeId = id;
+      saveProfiles();
+    }
+  } catch (e) { console.error('migration failed', e); }
+})();
+function activeProfile() {
+  return PROFILES.list.find(function (p) { return p.id === PROFILES.activeId; }) || { name: '', emoji: '🍡' };
+}
+
+/* ---------------- state (per active profile) ---------------- */
 function defaultState() {
   return {
     srs: {},
@@ -59,11 +96,10 @@ function defaultState() {
     introducedCount: { '動詞': 0, '形容詞': 0, '名詞': 0, '漢字': 0 }
   };
 }
-let STATE = loadState();
-
 function loadState() {
+  if (!PROFILES.activeId) return defaultState();
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(stateKeyFor(PROFILES.activeId));
     if (!raw) return defaultState();
     const parsed = JSON.parse(raw);
     const base = defaultState();
@@ -80,12 +116,12 @@ function loadState() {
   }
 }
 function saveState() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(STATE)); }
+  if (!PROFILES.activeId) return;
+  try { localStorage.setItem(stateKeyFor(PROFILES.activeId), JSON.stringify(STATE)); }
   catch (e) { console.error('save failed', e); }
 }
+let STATE = loadState();
 
-function pad2(n) { return n < 10 ? '0' + n : '' + n; }
-function todayStr(d) { d = d || new Date(); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
 function isDue(id) { const s = STATE.srs[id]; return !!(s && s.seen && s.due <= Date.now()); }
 function dueCountAll() { return UNI.filter(u => isDue(u.id)).length; }
 function levelOf(xp) { return Math.floor(xp / XP_PER_LEVEL) + 1; }
@@ -261,11 +297,12 @@ function buildDrillQuestion(item) {
 }
 
 /* ---------------- transient UI state ---------------- */
-let CURRENT_VIEW = 'home';
+let CURRENT_VIEW = PROFILES.activeId ? 'home' : 'profiles';
 let CURRENT_TAB = 'home';
 let CONFIG = { mode: null, filter: 'all' };
 let SESSION = null;
 let SEARCH_STATE = { query: '', filter: 'all', openId: null };
+let PROFILE_UI = { showForm: false, name: '', emoji: PROFILE_EMOJIS[0] };
 
 function go(view) { CURRENT_VIEW = view; render(); try { window.scrollTo(0, 0); } catch (e) { } }
 window.showTab = function (tab) { CURRENT_TAB = tab; go(tab); };
@@ -273,6 +310,50 @@ window.goHome = function () { CURRENT_TAB = 'home'; go('home'); };
 window.goBack = function () {
   if (CURRENT_VIEW === 'session' && !confirm('学習をやめてホームに戻りますか？')) return;
   go(CURRENT_TAB);
+};
+
+/* ---------------- profile switcher handlers ---------------- */
+window.openProfiles = function () { go('profiles'); };
+window.togglePform = function (v) {
+  PROFILE_UI.showForm = v;
+  if (v) { PROFILE_UI.name = ''; PROFILE_UI.emoji = PROFILE_EMOJIS[Math.floor(Math.random() * PROFILE_EMOJIS.length)]; }
+  render();
+};
+window.setPname = function (v) { PROFILE_UI.name = v; render(); };
+window.setPemoji = function (em) { PROFILE_UI.emoji = em; render(); };
+window.submitProfile = function () {
+  const name = (PROFILE_UI.name || '').trim() || ('がくしゅうしゃ' + (PROFILES.list.length + 1));
+  const id = 'p_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  PROFILES.list.push({ id: id, name: name, emoji: PROFILE_UI.emoji || PROFILE_EMOJIS[0], createdAt: todayStr() });
+  PROFILES.activeId = id;
+  saveProfiles();
+  STATE = defaultState();
+  saveState();
+  PROFILE_UI = { showForm: false, name: '', emoji: PROFILE_EMOJIS[0] };
+  ensureDaily(); touchStreak();
+  CURRENT_TAB = 'home';
+  go('home');
+};
+window.switchProfile = function (id) {
+  if (id !== PROFILES.activeId) {
+    PROFILES.activeId = id;
+    saveProfiles();
+    STATE = loadState();
+    ensureDaily(); touchStreak();
+  }
+  CURRENT_TAB = 'home';
+  go('home');
+};
+window.deleteProfile = function (id) {
+  if (!confirm('このプロフィールを削除しますか？学習記録は元に戻せません。')) return;
+  try { localStorage.removeItem(stateKeyFor(id)); } catch (e) { }
+  PROFILES.list = PROFILES.list.filter(function (p) { return p.id !== id; });
+  if (PROFILES.activeId === id) {
+    PROFILES.activeId = PROFILES.list.length ? PROFILES.list[0].id : null;
+    STATE = PROFILES.activeId ? loadState() : defaultState();
+  }
+  saveProfiles();
+  render();
 };
 
 window.startConfig = function (mode) {
@@ -441,8 +522,15 @@ function renderTopbar() {
     const title = CONFIG.mode === 'flashcard' ? 'フラッシュカード' : CONFIG.mode === 'quiz' ? '4択クイズ' : CONFIG.mode === 'verbdrill' ? '動詞活用ドリル' : CONFIG.mode === 'review' ? '今日の復習' : '学習';
     return '<div class="topbar"><button class="back-btn" onclick="goBack()">← もどる</button><div class="stats"><span class="stat-chip">' + esc(title) + '</span></div></div>';
   }
+  if (CURRENT_VIEW === 'profiles') {
+    if (!PROFILES.activeId) return '<div class="topbar"><div class="brand pop">つみことば</div></div>';
+    return '<div class="topbar"><button class="back-btn" onclick="goBack()">← もどる</button><div class="stats"><span class="stat-chip">プロフィール</span></div></div>';
+  }
   const lvl = levelOf(STATE.xp);
+  const p = activeProfile();
+  const pname = p.name && p.name.length > 6 ? p.name.slice(0, 6) + '…' : (p.name || '');
   return '<div class="topbar"><div class="brand pop">つみことば</div><div class="stats">' +
+    '<button class="stat-chip" onclick="openProfiles()">' + esc(p.emoji || '🍡') + ' ' + esc(pname) + '</button>' +
     '<span class="stat-chip">🔥 ' + STATE.streak.current + '</span>' +
     '<span class="stat-chip">⭐ Lv.' + lvl + '</span>' +
     '</div></div>';
@@ -628,6 +716,41 @@ function renderStamps() {
     '<div class="stamp-book">' + items + '</div>';
 }
 
+function renderProfiles() {
+  const hasProfiles = PROFILES.list.length > 0;
+  const showForm = !hasProfiles || PROFILE_UI.showForm;
+  let html = '';
+  if (!hasProfiles) {
+    html += '<div class="greet-card" style="margin-bottom:18px"><div style="width:56px;height:56px;flex-shrink:0">' + darumaSVG(true, '') + '</div><div class="msg">ようこそ！<br>まずは呼び名を決めてね。<b>パスワードは不要</b>で、この端末の中だけで使う名前だよ。</div></div>';
+  } else {
+    html += '<h2 style="font-size:20px;margin-bottom:4px">プロフィール</h2>';
+    html += '<p class="lead">この端末を複数人で使うときは、プロフィールを分けて学習記録を分けられます。<b>パスワードによる保護はありません</b> — 同じ端末を使う人なら誰でも切り替えて見られます。</p>';
+  }
+  if (hasProfiles) {
+    html += '<div class="mode-grid" style="margin-bottom:14px">' + PROFILES.list.map(function (p) {
+      const active = p.id === PROFILES.activeId;
+      return '<button class="mode-btn" style="--c:var(--teal)" onclick="switchProfile(\'' + p.id + '\')">' +
+        '<div class="icon-badge">' + p.emoji + '</div>' +
+        '<div class="txt"><b>' + esc(p.name) + (active ? '（使用中）' : '') + '</b><span>タップして切り替え</span></div>' +
+        '<span class="badge" style="--c:var(--red)" onclick="event.stopPropagation();deleteProfile(\'' + p.id + '\')">削除</span>' +
+        '</button>';
+    }).join('') + '</div>';
+  }
+  if (!showForm) {
+    html += '<button class="btn btn-ghost" onclick="togglePform(true)">＋ 新しいプロフィールを追加</button>';
+  } else {
+    html += '' +
+      '<div class="section-label">なまえ・アイコンをえらぼう</div>' +
+      '<input id="profile-name-input" class="search-input" type="text" placeholder="なまえ（例：たろう）" value="' + esc(PROFILE_UI.name) + '" oninput="setPname(this.value)">' +
+      '<div class="chip-row" style="margin-bottom:18px">' + PROFILE_EMOJIS.map(function (em) {
+        return '<button class="chip ' + (PROFILE_UI.emoji === em ? 'active' : '') + '" onclick="setPemoji(\'' + em + '\')">' + em + '</button>';
+      }).join('') + '</div>' +
+      '<button class="btn btn-primary" onclick="submitProfile()">' + (hasProfiles ? 'このプロフィールで始める' : 'はじめる') + '</button>' +
+      (hasProfiles ? '<button class="btn btn-ghost" onclick="togglePform(false)">キャンセル</button>' : '');
+  }
+  return html;
+}
+
 function renderSearch() {
   const filters = ['all', '動詞', '形容詞', '名詞', '漢字'];
   const q = SEARCH_STATE.query.trim();
@@ -637,7 +760,6 @@ function renderSearch() {
     const ql = q.toLowerCase();
     results = pool.filter(function (it) { return it.front.indexOf(q) !== -1 || (it.reading && it.reading.indexOf(q) !== -1) || (it.meaning && it.meaning.toLowerCase().indexOf(ql) !== -1); });
   }
-  results = results.slice(0, 80);
   const chipsHTML = filters.map(function (f) {
     return '<button class="chip ' + (SEARCH_STATE.filter === f ? 'active' : '') + '" style="--c:' + (POS_COLOR[f] || 'var(--coral)') + '" onclick="setSearchFilter(\'' + f + '\')">' + (f === 'all' ? '全部' : f) + '</button>';
   }).join('');
@@ -662,13 +784,20 @@ function renderSearch() {
   }).join('') : '<div class="empty-note"><span class="egg">🔍</span>見つからなかったよ。ことばや意味で検索してみてね。</div>';
   return '' +
     '<h2 style="font-size:20px;margin-bottom:12px">さがす</h2>' +
-    '<input class="search-input" type="text" placeholder="ことば・読み方・意味で検索" value="' + esc(SEARCH_STATE.query) + '" oninput="onSearchInput(this.value)">' +
-    '<div class="chip-row" style="margin-bottom:14px">' + chipsHTML + '</div>' + listHTML;
+    '<input id="search-input-el" class="search-input" type="text" placeholder="ことば・読み方・意味で検索" value="' + esc(SEARCH_STATE.query) + '" oninput="onSearchInput(this.value)">' +
+    '<div class="chip-row" style="margin-bottom:6px">' + chipsHTML + '</div>' +
+    '<p class="lead" style="margin-bottom:10px">' + results.length + '件</p>' +
+    listHTML;
 }
 
 function render() {
   const app = document.getElementById('app-root');
   if (!app) return;
+  const active = document.activeElement;
+  let restoreId = null, restorePos = null;
+  if (active && active.id && (active.id === 'search-input-el' || active.id === 'profile-name-input')) {
+    restoreId = active.id; restorePos = active.selectionStart;
+  }
   const showTabbar = ['home', 'stamps', 'search'].indexOf(CURRENT_VIEW) !== -1;
   let body;
   if (CURRENT_VIEW === 'home') body = renderHome();
@@ -678,12 +807,18 @@ function render() {
   else if (CURRENT_VIEW === 'levelup') body = renderLevelup();
   else if (CURRENT_VIEW === 'stamps') body = renderStamps();
   else if (CURRENT_VIEW === 'search') body = renderSearch();
+  else if (CURRENT_VIEW === 'profiles') body = renderProfiles();
   else body = '';
   app.innerHTML = renderTopbar() + '<main id="view">' + body + '</main>' + (showTabbar ? renderTabbar() : '');
+  if (restoreId) {
+    const el = document.getElementById(restoreId);
+    if (el) { el.focus(); try { el.setSelectionRange(restorePos, restorePos); } catch (e) { } }
+  }
 }
 
 /* ---------------- init ---------------- */
 document.addEventListener('DOMContentLoaded', function () {
+  if (!PROFILES.activeId) { go('profiles'); return; }
   ensureDaily();
   touchStreak();
   render();
