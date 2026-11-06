@@ -304,19 +304,61 @@ let SESSION = null;
 let SEARCH_STATE = { query: '', filter: 'all', openId: null };
 let PROFILE_UI = { showForm: false, name: '', emoji: PROFILE_EMOJIS[0] };
 
-/* ---------------- audio (任意: audio/manifest.json があれば🔊を表示) ---------------- */
+/* ---------------- audio: ①audio/*.mp3（あれば優先） ②端末の読み上げ機能（Web Speech API） ---------------- */
 let AUDIO = { items: {}, credit: '', current: null };
-function hasAudio(id, kind) { const a = AUDIO.items[id]; return !!(a && a.indexOf(kind) !== -1); }
+function audioText(id, kind) {
+  const it = UNI_BY_ID[id]; if (!it) return '';
+  if (it.type === 'kanji') {
+    if (kind !== 'ex') return '';
+    const m = /（(.+?)）/.exec(it.example || '');
+    return m ? m[1] : (it.example || '');
+  }
+  return kind === 'ex' ? (it.example || '') : (it.reading || it.front || '');
+}
+function speechOK() {
+  try {
+    if (typeof speechSynthesis === 'undefined' || typeof SpeechSynthesisUtterance === 'undefined') return false;
+    const v = speechSynthesis.getVoices();
+    return !(v && v.length && !v.some(function (x) { return /^ja/i.test(x.lang || ''); }));
+  } catch (e) { return false; }
+}
+function pickJaVoice() {
+  try {
+    const v = (speechSynthesis.getVoices() || []).filter(function (x) { return /^ja/i.test(x.lang || ''); });
+    return v.find(function (x) { return /kyoko|otoya|nanami|google/i.test(x.name || ''); }) || v[0] || null;
+  } catch (e) { return null; }
+}
+function hasMp3(id, kind) { const a = AUDIO.items[id]; return !!(a && a.indexOf(kind) !== -1); }
+function hasAudio(id, kind) { return hasMp3(id, kind) || (speechOK() && !!audioText(id, kind)); }
 function audioBtn(id, kind) {
   if (!hasAudio(id, kind)) return '';
   return '<button class="audio-btn" type="button" aria-label="音声を再生" onclick="event.stopPropagation();playAudio(\'' + id + '\',\'' + kind + '\')">🔊</button>';
 }
+function stopAudio() {
+  try { if (AUDIO.current) AUDIO.current.pause(); } catch (e) { }
+  try { if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel(); } catch (e) { }
+}
+function speak(id, kind) {
+  if (!speechOK()) return;
+  const text = audioText(id, kind); if (!text) return;
+  try {
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'ja-JP'; u.rate = 0.9;
+    const v = pickJaVoice(); if (v) u.voice = v;
+    speechSynthesis.speak(u);
+  } catch (e) { }
+}
 window.playAudio = function (id, kind) {
   try {
-    if (AUDIO.current) AUDIO.current.pause();
-    const a = new Audio('audio/' + id + (kind === 'ex' ? '_ex' : '') + '.mp3');
-    AUDIO.current = a;
-    const pr = a.play(); if (pr && pr.catch) pr.catch(function () { });
+    stopAudio();
+    if (hasMp3(id, kind)) {
+      const a = new Audio('audio/' + id + (kind === 'ex' ? '_ex' : '') + '.mp3');
+      a.onerror = function () { speak(id, kind); };  // ファイルが無い場合は読み上げに切り替え
+      AUDIO.current = a;
+      const pr = a.play(); if (pr && pr.catch) pr.catch(function () { });
+    } else {
+      speak(id, kind);
+    }
   } catch (e) { }
 };
 function loadAudioManifest() {
@@ -842,6 +884,7 @@ function render() {
 /* ---------------- init ---------------- */
 document.addEventListener('DOMContentLoaded', function () {
   loadAudioManifest();
+  try { if (typeof speechSynthesis !== 'undefined') speechSynthesis.onvoiceschanged = function () { render(); }; } catch (e) { }
   if (!PROFILES.activeId) { go('profiles'); return; }
   ensureDaily();
   touchStreak();
