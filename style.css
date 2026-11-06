@@ -104,7 +104,7 @@ h1, h2, h3 { margin: 0; font-family: 'Zen Maru Gothic', sans-serif; font-weight:
 }
 .topbar .brand { font-size: 19px; display: flex; align-items: center; gap: 7px; }
 .topbar .brand .egg { font-size: 22px; }
-.topbar .stats { display: flex; gap: 8px; }
+.topbar .stats { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .topbar .stat-chip {
   background: rgba(255,255,255,0.22); border-radius: 999px; padding: 5px 10px;
   display: flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 900;
@@ -353,3 +353,9 @@ main#view { flex: 1; padding: 18px 16px 24px; padding-bottom: calc(24px + 76px +
   .flip-card, .progress-fill, .btn, .confetti-wrap i { transition: none !important; animation: none !important; }
 }
 ::selection { background: var(--coral); color: #fff; }
+
+/* ---------------- audio ---------------- */
+.audio-btn { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; margin-left: 8px; padding: 0; border: 3px solid var(--ink); border-radius: 50%; background: var(--surface); font-size: 16px; line-height: 1; cursor: pointer; vertical-align: middle; box-shadow: 0 3px 0 var(--ink); }
+.audio-btn:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+.front-word + .audio-btn { display: flex; margin: 12px auto 0; }
+.audio-credit { margin: 22px 0 6px; font-size: 11px; text-align: center; color: var(--ink-soft); font-weight: 700; }
