@@ -335,29 +335,39 @@ function audioBtn(id, kind) {
   return '<button class="audio-btn" type="button" aria-label="音声を再生" onclick="event.stopPropagation();playAudio(\'' + id + '\',\'' + kind + '\')">🔊</button>';
 }
 function stopAudio() {
+  // 読み上げ中のときだけ止める（iOS Safari は、待機中に cancel() してすぐ speak() すると鳴らないことがあるため）
+  let wasBusy = false;
   try { if (AUDIO.current) AUDIO.current.pause(); } catch (e) { }
-  try { if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel(); } catch (e) { }
+  try {
+    if (typeof speechSynthesis !== 'undefined' && (speechSynthesis.speaking || speechSynthesis.pending)) { speechSynthesis.cancel(); wasBusy = true; }
+  } catch (e) { }
+  return wasBusy;
 }
-function speak(id, kind) {
+function speak(id, kind, delay) {
   if (!speechOK()) return;
   const text = audioText(id, kind); if (!text) return;
-  try {
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = 'ja-JP'; u.rate = 0.9;
-    const v = pickJaVoice(); if (v) u.voice = v;
-    speechSynthesis.speak(u);
-  } catch (e) { }
+  const go = function () {
+    try {
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'ja-JP'; u.rate = 0.9;
+      const v = pickJaVoice(); if (v) u.voice = v;
+      AUDIO.utter = u;  // iOS Safari: 再生前にオブジェクトが破棄されて鳴らなくなるのを防ぐため参照を保持
+      if (speechSynthesis.paused) speechSynthesis.resume();
+      speechSynthesis.speak(u);
+    } catch (e) { }
+  };
+  if (delay) setTimeout(go, 80); else go();
 }
 window.playAudio = function (id, kind) {
   try {
-    stopAudio();
+    const wasBusy = stopAudio();
     if (hasMp3(id, kind)) {
       const a = new Audio('audio/' + id + (kind === 'ex' ? '_ex' : '') + '.mp3');
-      a.onerror = function () { speak(id, kind); };  // ファイルが無い場合は読み上げに切り替え
+      a.onerror = function () { speak(id, kind, false); };  // ファイルが無い場合は読み上げに切り替え
       AUDIO.current = a;
       const pr = a.play(); if (pr && pr.catch) pr.catch(function () { });
     } else {
-      speak(id, kind);
+      speak(id, kind, wasBusy);
     }
   } catch (e) { }
 };
