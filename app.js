@@ -304,6 +304,29 @@ let SESSION = null;
 let SEARCH_STATE = { query: '', filter: 'all', openId: null };
 let PROFILE_UI = { showForm: false, name: '', emoji: PROFILE_EMOJIS[0] };
 
+/* ---------------- audio (任意: audio/manifest.json があれば🔊を表示) ---------------- */
+let AUDIO = { items: {}, credit: '', current: null };
+function hasAudio(id, kind) { const a = AUDIO.items[id]; return !!(a && a.indexOf(kind) !== -1); }
+function audioBtn(id, kind) {
+  if (!hasAudio(id, kind)) return '';
+  return '<button class="audio-btn" type="button" aria-label="音声を再生" onclick="event.stopPropagation();playAudio(\'' + id + '\',\'' + kind + '\')">🔊</button>';
+}
+window.playAudio = function (id, kind) {
+  try {
+    if (AUDIO.current) AUDIO.current.pause();
+    const a = new Audio('audio/' + id + (kind === 'ex' ? '_ex' : '') + '.mp3');
+    AUDIO.current = a;
+    const pr = a.play(); if (pr && pr.catch) pr.catch(function () { });
+  } catch (e) { }
+};
+function loadAudioManifest() {
+  if (typeof fetch !== 'function') return;
+  fetch('audio/manifest.json', { cache: 'no-cache' })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (m) { if (m && m.items) { AUDIO.items = m.items; AUDIO.credit = m.credit || ''; render(); } })
+    .catch(function () { });
+}
+
 function go(view) { CURRENT_VIEW = view; render(); try { window.scrollTo(0, 0); } catch (e) { } }
 window.showTab = function (tab) { CURRENT_TAB = tab; go(tab); };
 window.goHome = function () { CURRENT_TAB = 'home'; go('home'); };
@@ -628,10 +651,10 @@ function renderFlashBody() {
   if (isKanji) {
     backContent = '<div class="back-meaning" style="color:' + POS_COLOR_DEEP['漢字'] + '">' + esc(item.meaning) + '</div>' +
       '<div class="kanji-meta"><div><span>音読み</span>' + esc(item.onyomi) + '</div><div><span>訓読み</span>' + esc(item.kunyomi) + '</div>' +
-      '<div><span>画数</span>' + esc(item.strokes) + '画</div><div><span>熟語例</span>' + esc(item.example) + '</div></div>';
+      '<div><span>画数</span>' + esc(item.strokes) + '画</div><div><span>熟語例</span>' + esc(item.example) + audioBtn(item.id, 'ex') + '</div></div>';
   } else {
     backContent = '<div class="back-meaning" style="color:' + POS_COLOR_DEEP[item.pos] + '">' + esc(item.meaning) + '</div>' +
-      '<div class="back-example">' + esc(item.example) + '</div>' +
+      '<div class="back-example">' + esc(item.example) + audioBtn(item.id, 'ex') + '</div>' +
       (isVerb ? ('<div class="conj-grid"><div><span>ない形</span>' + esc(item.conj.nai) + '</div><div><span>ます形</span>' + esc(item.conj.masu) + '</div>' +
         '<div><span>ば形</span>' + esc(item.conj.ba) + '</div><div><span>よう形</span>' + esc(item.conj.you) + '</div>' +
         '<div><span>て形</span>' + esc(item.conj.te) + '</div><div><span>た形</span>' + esc(item.conj.ta) + '</div></div>') : '');
@@ -639,7 +662,7 @@ function renderFlashBody() {
   const longWord = item.front.length > 5 ? ' long' : '';
   const frontInner = isKanji
     ? ('<div class="kanji-box"><span class="kanji-char">' + esc(item.front) + '</span></div>')
-    : ('<span class="reading-ruby">' + esc(item.reading) + '</span><div class="front-word' + longWord + '">' + esc(item.front) + '</div>');
+    : ('<span class="reading-ruby">' + esc(item.reading) + '</span><div class="front-word' + longWord + '">' + esc(item.front) + '</div>' + audioBtn(item.id, 'w'));
   return '' +
     '<div class="card-stage"><div class="flip-card ' + (SESSION.flipped ? 'flipped' : '') + '" onclick="flipCard()">' +
     '<div class="face front" style="--c:' + c + '"><span class="pos-tag" style="--c:' + c + '">' + esc(item.pos) + '</span>' + frontInner + '<span class="tap-hint">タップしてめくる</span></div>' +
@@ -657,14 +680,14 @@ function renderQuizBody() {
     if (answered) { if (i === q.correctIndex) cls += ' correct'; else if (i === SESSION.selectedIdx) cls += ' wrong'; }
     return '<button class="' + cls + '" ' + (answered ? 'disabled' : '') + ' onclick="selectQuizOption(' + i + ')">' + esc(opt) + '</button>';
   }).join('');
-  const subLine = q.type === 'meaning' ? ('<div class="sub">' + esc(item.reading) + '</div>') : '';
+  const subLine = q.type === 'meaning' ? ('<div class="sub">' + esc(item.reading) + '</div>' + audioBtn(item.id, 'w')) : '';
   const promptText = q.type === 'front' ? item.meaning : item.front;
   const longCls = String(promptText).length > 14 ? ' long' : '';
   return '' +
     '<div class="quiz-prompt-type">' + esc(q.promptLabel) + '</div>' +
     '<div class="quiz-front' + longCls + '" style="border-color:' + c + ';box-shadow:0 4px 0 ' + c + '">' + esc(promptText) + subLine + '</div>' +
     '<div class="opt-list">' + optsHTML + '</div>' +
-    (answered ? ('<div class="feedback-box">' + (item.type === 'kanji' ? '熟語例：' : '例文：') + esc(item.example) + '</div><button class="btn btn-primary" style="margin-top:14px" onclick="nextQuestion()">つぎへ →</button>') : '');
+    (answered ? ('<div class="feedback-box">' + (item.type === 'kanji' ? '熟語例：' : '例文：') + esc(item.example) + (q.type === 'front' ? audioBtn(item.id, 'w') : '') + audioBtn(item.id, 'ex') + '</div><button class="btn btn-primary" style="margin-top:14px" onclick="nextQuestion()">つぎへ →</button>') : '');
 }
 
 function renderDrillBody() {
@@ -676,10 +699,10 @@ function renderDrillBody() {
     return '<button class="' + cls + '" ' + (answered ? 'disabled' : '') + ' onclick="selectDrillOption(' + i + ')">' + esc(opt) + '</button>';
   }).join('');
   return '' +
-    '<div class="drill-verb"><div class="w">' + esc(item.front) + '</div><div class="r">' + esc(item.reading) + '・' + esc(item.meaning) + '</div></div>' +
+    '<div class="drill-verb"><div class="w">' + esc(item.front) + '</div><div class="r">' + esc(item.reading) + '・' + esc(item.meaning) + '</div>' + audioBtn(item.id, 'w') + '</div>' +
     '<div class="drill-target"><span class="badge">' + esc(d.label) + 'は？</span></div>' +
     '<div class="opt-list">' + optsHTML + '</div>' +
-    (answered ? ('<div class="feedback-box">例文：' + esc(item.example) + '</div><button class="btn btn-primary" style="margin-top:14px" onclick="nextQuestion()">つぎへ →</button>') : '');
+    (answered ? ('<div class="feedback-box">例文：' + esc(item.example) + audioBtn(item.id, 'ex') + '</div><button class="btn btn-primary" style="margin-top:14px" onclick="nextQuestion()">つぎへ →</button>') : '');
 }
 
 function renderSummary() {
@@ -771,15 +794,15 @@ function renderSearch() {
     if (open) {
       if (it.type === 'kanji') {
         detail = '<div class="list-detail kanji-meta"><div><span>音読み</span>' + esc(it.onyomi) + '</div><div><span>訓読み</span>' + esc(it.kunyomi) + '</div>' +
-          '<div><span>画数</span>' + esc(it.strokes) + '画</div><div><span>熟語例</span>' + esc(it.example) + '</div></div>';
+          '<div><span>画数</span>' + esc(it.strokes) + '画</div><div><span>熟語例</span>' + esc(it.example) + audioBtn(it.id, 'ex') + '</div></div>';
       } else {
-        detail = '<div class="list-detail"><div class="back-example" style="margin-bottom:' + (it.conj ? '8px' : '0') + '">' + esc(it.example) + '</div>' +
+        detail = '<div class="list-detail"><div class="back-example" style="margin-bottom:' + (it.conj ? '8px' : '0') + '">' + esc(it.example) + audioBtn(it.id, 'ex') + '</div>' +
           (it.conj ? ('<div class="conj-grid"><div><span>ない形</span>' + esc(it.conj.nai) + '</div><div><span>ます形</span>' + esc(it.conj.masu) + '</div>' +
             '<div><span>ば形</span>' + esc(it.conj.ba) + '</div><div><span>よう形</span>' + esc(it.conj.you) + '</div>' +
             '<div><span>て形</span>' + esc(it.conj.te) + '</div><div><span>た形</span>' + esc(it.conj.ta) + '</div></div>') : '') + '</div>';
       }
     }
-    return '<div class="list-item" onclick="toggleListItem(\'' + it.id + '\')"><div class="row1"><span class="w">' + esc(it.front) + '</span><span class="r">' + esc(it.reading) + '</span><span class="tag" style="--c:' + (POS_COLOR[it.pos] || 'var(--coral)') + '">' + esc(it.pos) + '</span></div>' +
+    return '<div class="list-item" onclick="toggleListItem(\'' + it.id + '\')"><div class="row1"><span class="w">' + esc(it.front) + '</span><span class="r">' + esc(it.reading) + '</span>' + audioBtn(it.id, 'w') + '<span class="tag" style="--c:' + (POS_COLOR[it.pos] || 'var(--coral)') + '">' + esc(it.pos) + '</span></div>' +
       '<div class="m">' + esc(it.meaning) + ' ・ ' + status + '</div>' + detail + '</div>';
   }).join('') : '<div class="empty-note"><span class="egg">🔍</span>見つからなかったよ。ことばや意味で検索してみてね。</div>';
   return '' +
@@ -809,7 +832,7 @@ function render() {
   else if (CURRENT_VIEW === 'search') body = renderSearch();
   else if (CURRENT_VIEW === 'profiles') body = renderProfiles();
   else body = '';
-  app.innerHTML = renderTopbar() + '<main id="view">' + body + '</main>' + (showTabbar ? renderTabbar() : '');
+  app.innerHTML = renderTopbar() + '<main id="view">' + body + (AUDIO.credit && CURRENT_VIEW !== 'profiles' ? '<div class="audio-credit">' + esc(AUDIO.credit) + '</div>' : '') + '</main>' + (showTabbar ? renderTabbar() : '');
   if (restoreId) {
     const el = document.getElementById(restoreId);
     if (el) { el.focus(); try { el.setSelectionRange(restorePos, restorePos); } catch (e) { } }
@@ -818,6 +841,7 @@ function render() {
 
 /* ---------------- init ---------------- */
 document.addEventListener('DOMContentLoaded', function () {
+  loadAudioManifest();
   if (!PROFILES.activeId) { go('profiles'); return; }
   ensureDaily();
   touchStreak();
