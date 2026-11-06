@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""
+つみことば 音声一括生成スクリプト（VOICEVOX 用）
+
+data.js の全単語・漢字を読み上げて audio/ フォルダに MP3 を書き出します。
+女性・男性の声を 1 語ごとに交互に使います（単語と例文は同じ声）。
+
+事前準備:
+  1. VOICEVOX を起動しておく（http://127.0.0.1:50021 でエンジンが動きます）
+  2. ffmpeg をインストールしておく（WAV → MP3 変換に使用）
+  3. Python 3.8 以上（追加ライブラリは不要）
+
+使い方（リポジトリのルートで実行）:
+  python tools/generate_audio.py
+  python tools/generate_audio.py --female 春日部つむぎ --male 青山龍星
+  python tools/generate_audio.py --limit 10          # 試しに最初の10語だけ
+  python tools/generate_audio.py --force             # 既存ファイルも作り直す
+
+出力:
+  audio/<id>.mp3        単語の音声      （例: audio/v1.mp3）
+  audio/<id>_ex.mp3     例文の音声      （漢字は熟語例の読み）
+  audio/manifest.json   アプリが読み込む一覧＋クレジット表記
+
+読み間違いの直し方:
+  audio_overrides.json を作り、読ませたい文字列を指定して --force なしで再実行
+  （該当IDのファイルだけ作り直したい場合は、先にそのmp3を削除）
+  例: {"v1": {"w": "たべる", "ex": "レストランでごはんをたべる"}}
+"""
+import argparse
+import json
+import re
+import shutil
+import subprocess
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+
+def http(method, url, body=None, timeout=60):
+    data = None
+    headers = {}
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        return res.read()
+
+
+def load_data(path):
+    src = Path(path).read_text(encoding="utf-8")
+    words = json.loads(re.search(r"const WORDS\s*=\s*(\[.*?\]);\s*const KANJI", src, re.S).group(1))
+    kanji = json.loads(re.search(r"const KANJI\s*=\s*(\[.*?\]);", src, re.S).group(1))
+    return words, kanji
+
+
+def resolve_style_id(base, character, style):
+    speakers = json.loads(http("GET", base + "/speakers"))
+    for sp in speakers:
+        if sp["name"] == character:
+            for st in sp["styles"]:
+                if st["name"] == style:
+                    return st["id"]
+            return sp["styles"][0]["id"]
+    names = ", ".join(sp["name"] for sp in speakers)
+    sys.exit("キャラクター「%s」が見つかりません。使えるキャラクター: %s" % (character, names))
+
+
+def synthesize(base, text, speaker, speed):
+    q = urllib.parse.urlencode({"text": text, "speaker": speaker})
+    query = json.loads(http("POST", base + "/audio_query?" + q))
+    query["speedScale"] = speed
+    return http("POST", base + "/synthesis?speaker=%d" % speaker, query, timeout=120)
+
+
+def wav_to_mp3(wav_bytes, out_path):
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-f", "wav", "-i", "pipe:0",
+         "-ac", "1", "-ar", "24000", "-b:a", "48k", str(out_path)],
+        input=wav_bytes, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode != 0:
+        raise RuntimeError("ffmpeg 失敗: " + proc.stderr.decode("utf-8", "replace"))
+
+
+def build_jobs(words, kanji, overrides, use_reading, with_examples):
+    """(id, kind, text, voice_index) を返す。voice_index: 0=女性, 1=男性（交互）"""
+    jobs = []
+    idx = 0
+    for w in words:
+        ov = overrides.get(w["id"], {})
+        voice = idx % 2
+        jobs.append((w["id"], "w", ov.get("w") or (w["reading"] if use_reading else w["word"]), voice))
+        if with_examples:
+            jobs.append((w["id"], "ex", ov.get("ex") or w["example"], voice))
+        idx += 1
+    for k in kanji:
+        ov = overrides.get(k["id"], {})
+        m = re.search(r"（(.+?)）", k["compound"])
+        text = ov.get("ex") or (m.group(1) if m else k["compound"])
+        jobs.append((k["id"], "ex", text, idx % 2))
+        idx += 1
+    return jobs
+
+
+def main():
+    ap = argparse.ArgumentParser(description="つみことば 音声生成 (VOICEVOX)")
+    ap.add_argument("--data", default="data.js")
+    ap.add_argument("--out", default="audio")
+    ap.add_argument("--engine", default="http://127.0.0.1:50021")
+    ap.add_argument("--female", default="四国めたん", help="女性の声のキャラクター名")
+    ap.add_argument("--male", default="玄野武宏", help="男性の声のキャラクター名")
+    ap.add_argument("--style", default="ノーマル", help="スタイル名（既定: ノーマル）")
+    ap.add_argument("--speed", type=float, default=0.95, help="話す速さ（1.0 が標準）")
+    ap.add_argument("--use-reading", action="store_true", help="単語は漢字でなくひらがな読みで発音させる")
+    ap.add_argument("--no-example", action="store_true", help="例文の音声は作らない")
+    ap.add_argument("--overrides", default="audio_overrides.json")
+    ap.add_argument("--limit", type=int, default=0, help="最初のN件だけ生成（動作確認用）")
+    ap.add_argument("--force", action="store_true", help="既存のmp3も作り直す")
+    args = ap.parse_args()
+
+    if not shutil.which("ffmpeg"):
+        sys.exit("ffmpeg が見つかりません。インストールしてから再実行してください。")
+
+    base = args.engine.rstrip("/")
+    try:
+        http("GET", base + "/version", timeout=5)
+    except (urllib.error.URLError, OSError):
+        sys.exit("VOICEVOX エンジンに接続できません。VOICEVOX を起動してから再実行してください。(%s)" % base)
+
+    ids = [resolve_style_id(base, args.female, args.style),
+           resolve_style_id(base, args.male, args.style)]
+    print("女性: %s (id=%d) / 男性: %s (id=%d)" % (args.female, ids[0], args.male, ids[1]))
+
+    words, kanji = load_data(args.data)
+    ov_path = Path(args.overrides)
+    overrides = json.loads(ov_path.read_text(encoding="utf-8")) if ov_path.exists() else {}
+    jobs = build_jobs(words, kanji, overrides, args.use_reading, not args.no_example)
+    if args.limit:
+        jobs = jobs[:args.limit]
+
+    out = Path(args.out)
+    done = skipped = 0
+    failed = []
+    for n, (item_id, kind, text, voice) in enumerate(jobs, 1):
+        path = out / (item_id + ("_ex" if kind == "ex" else "") + ".mp3")
+        if path.exists() and not args.force:
+            skipped += 1
+            continue
+        try:
+            wav_to_mp3(synthesize(base, text, ids[voice], args.speed), path)
+            done += 1
+        except Exception as e:  # 1件の失敗で全体を止めない
+            failed.append((item_id, kind, text, str(e)))
+        if n % 50 == 0 or n == len(jobs):
+            print("  %d / %d" % (n, len(jobs)))
+
+    # manifest: ディスク上に実在するファイルだけを載せる
+    items = {}
+    for item_id, kind, _t, _v in build_jobs(words, kanji, {}, False, True):
+        if (out / (item_id + ("_ex" if kind == "ex" else "") + ".mp3")).exists():
+            items.setdefault(item_id, []).append(kind)
+    manifest = {
+        "voices": {"female": args.female, "male": args.male},
+        "credit": "音声：VOICEVOX:%s / VOICEVOX:%s" % (args.female, args.male),
+        "items": items,
+    }
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    print("完了: 新規 %d 件 / スキップ %d 件 / 失敗 %d 件" % (done, skipped, len(failed)))
+    for f in failed[:20]:
+        print("  失敗:", f)
+    print("※ 使用キャラクターの利用規約・クレジット表記条件を公式サイトで確認してください。")
+
+
+if __name__ == "__main__":
+    main()
